@@ -7,8 +7,9 @@
     "dev": "turbo dev",
     "lint": "turbo lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
-    "install:bot": "cd apps/llm-telegram-bot && uv sync",
-    "start:bot": "cd apps/llm-telegram-bot && doppler run -- uv run bot.py"
+    "install:bot": "cd apps/bot && uv sync",
+    "dev:bot": "cd apps/bot && doppler run -- uv run watchfiles 'uv run bot.py'",
+    "start:bot": "cd apps/bot && doppler run -- uv run bot.py"
   },
   "devDependencies": {
     "@workspace/eslint-config": "workspace:*",
