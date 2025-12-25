@@ -8,6 +8,7 @@ from observability import log_event
 
 _logger = logging.getLogger("bot.ai")
 
+
 async def parse_commands(user_input: str) -> List[str]:
     """Use LLM to extract multiple commands from natural language."""
     t0 = time.perf_counter()
@@ -21,11 +22,10 @@ User request: {user_input}"""
 
     content = ""
     async for message in query(
-        prompt=prompt,
-        options=ClaudeAgentOptions(allowed_tools=[])
+        prompt=prompt, options=ClaudeAgentOptions(allowed_tools=[])
     ):
-        if hasattr(message, 'text'):
-            content += message.text
+        if hasattr(message, "result"):
+            content += message.result
 
     content = content.strip()
     if content == "REFUSE":
@@ -35,7 +35,7 @@ User request: {user_input}"""
             duration_ms=int((time.perf_counter() - t0) * 1000),
         )
         return []
-        
+
     commands = [cmd.strip() for cmd in content.split("\n") if cmd.strip()]
     log_event(
         _logger,
@@ -59,10 +59,12 @@ User message: {user_input}"""
     reply = ""
     async for message in query(
         prompt=prompt,
-        options=ClaudeAgentOptions(allowed_tools=[])
+        options=ClaudeAgentOptions(
+            allowed_tools=["Read", "Edit", "Bash", "Glob", "WebSearch", "WebFetch"]
+        ),
     ):
-        if hasattr(message, 'text'):
-            reply += message.text
+        if hasattr(message, "result"):
+            reply += message.result
 
     reply = reply.strip() or "(empty response)"
     log_event(
