@@ -30,6 +30,7 @@ def main():
         .token(BOT_TOKEN)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
+        .concurrent_updates(True)  # Enable parallel processing
         .build()
     )
 
