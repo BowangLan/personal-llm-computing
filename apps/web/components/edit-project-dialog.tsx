@@ -11,68 +11,52 @@ import {
   DialogTitle,
 } from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@workspace/ui/components/select"
-import { updateSession, getProjects } from "@/app/actions"
-import type { SessionWithMessageCount, Project } from "@/lib/db"
+import { updateProject } from "@/app/actions"
+import type { Project } from "@/lib/db"
 
-interface EditSessionDialogProps {
-  session: SessionWithMessageCount
+interface EditProjectDialogProps {
+  project: Project
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-export function EditSessionDialog({
-  session,
+export function EditProjectDialog({
+  project,
   open,
   onOpenChange,
-}: EditSessionDialogProps) {
-  const [name, setName] = useState(session.name)
-  const [projectId, setProjectId] = useState<string>(
-    session.project_id?.toString() ?? ""
-  )
-  const [projects, setProjects] = useState<Project[]>([])
+}: EditProjectDialogProps) {
+  const [name, setName] = useState(project.name)
+  const [workingDir, setWorkingDir] = useState(project.working_dir)
   const [error, setError] = useState("")
   const [isPending, startTransition] = useTransition()
 
   useEffect(() => {
-    setName(session.name)
-    setProjectId(session.project_id?.toString() ?? "")
+    setName(project.name)
+    setWorkingDir(project.working_dir)
     setError("")
-  }, [session])
-
-  useEffect(() => {
-    if (open) {
-      getProjects().then((result) => {
-        if (result.success) {
-          setProjects(result.data || [])
-        }
-      })
-    }
-  }, [open])
+  }, [project])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
 
     if (!name.trim()) {
-      setError("Session name is required")
+      setError("Project name is required")
+      return
+    }
+
+    if (!workingDir.trim()) {
+      setError("Working directory is required")
       return
     }
 
     startTransition(async () => {
-      const projectIdNum = projectId ? parseInt(projectId, 10) : null
-      const result = await updateSession(session.id, name.trim(), projectIdNum)
+      const result = await updateProject(project.id, name.trim(), workingDir.trim())
 
       if (result.success) {
         onOpenChange(false)
       } else {
-        setError(result.error || "Failed to update session")
+        setError(result.error || "Failed to update project")
       }
     })
   }
@@ -82,20 +66,20 @@ export function EditSessionDialog({
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>Edit Session</DialogTitle>
+            <DialogTitle>Edit Project</DialogTitle>
             <DialogDescription>
-              Update the session name for &quot;{session.name}&quot;
+              Update the project details for &quot;{project.name}&quot;
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
               <label htmlFor="edit-name" className="text-sm font-medium">
-                Session Name
+                Project Name
               </label>
               <Input
                 id="edit-name"
-                placeholder="Session name"
+                placeholder="Project name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 disabled={isPending}
@@ -103,40 +87,30 @@ export function EditSessionDialog({
             </div>
 
             <div className="grid gap-2">
-              <label htmlFor="edit-projectId" className="text-sm font-medium">
-                Project (Optional)
+              <label htmlFor="edit-workingDir" className="text-sm font-medium">
+                Working Directory
               </label>
-              <Select
-                value={projectId}
-                onValueChange={setProjectId}
+              <Input
+                id="edit-workingDir"
+                placeholder="Working directory"
+                value={workingDir}
+                onChange={(e) => setWorkingDir(e.target.value)}
                 disabled={isPending}
-              >
-                <SelectTrigger id="edit-projectId">
-                  <SelectValue placeholder="No project" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">No project</SelectItem>
-                  {projects.map((project) => (
-                    <SelectItem key={project.id} value={project.id.toString()}>
-                      {project.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              />
             </div>
 
             <div className="grid gap-2 text-sm text-muted-foreground">
               <div className="flex justify-between">
-                <span>Session ID:</span>
-                <span className="font-mono">{session.id}</span>
+                <span>Project ID:</span>
+                <span className="font-mono">{project.id}</span>
               </div>
               <div className="flex justify-between">
                 <span>User ID:</span>
-                <span className="font-mono">{session.user_id}</span>
+                <span className="font-mono">{project.user_id}</span>
               </div>
               <div className="flex justify-between">
                 <span>Chat ID:</span>
-                <span className="font-mono">{session.chat_id}</span>
+                <span className="font-mono">{project.chat_id}</span>
               </div>
             </div>
 
@@ -153,7 +127,7 @@ export function EditSessionDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={isPending}>
-              {isPending ? "Updating..." : "Update Session"}
+              {isPending ? "Updating..." : "Update Project"}
             </Button>
           </DialogFooter>
         </form>

@@ -48,6 +48,7 @@ export function SessionsTable({ sessions }: SessionsTableProps) {
             <TableRow>
               <TableHead className="w-[100px]">ID</TableHead>
               <TableHead>Name</TableHead>
+              <TableHead>Project</TableHead>
               <TableHead>User ID</TableHead>
               <TableHead>Chat ID</TableHead>
               <TableHead>Messages</TableHead>
@@ -60,6 +61,13 @@ export function SessionsTable({ sessions }: SessionsTableProps) {
               <TableRow key={session.id}>
                 <TableCell className="font-mono">{session.id}</TableCell>
                 <TableCell className="font-medium">{session.name}</TableCell>
+                <TableCell>
+                  {session.project_name ? (
+                    <Badge variant="outline">{session.project_name}</Badge>
+                  ) : (
+                    <span className="text-muted-foreground text-sm">No project</span>
+                  )}
+                </TableCell>
                 <TableCell className="font-mono">{session.user_id}</TableCell>
                 <TableCell className="font-mono">{session.chat_id}</TableCell>
                 <TableCell>

@@ -12,6 +12,7 @@ export interface Session {
   user_id: number
   chat_id: number
   name: string
+  project_id: number | null
   state: string
   created_at: string
   updated_at: string
@@ -27,8 +28,19 @@ export interface Message {
   timestamp: string
 }
 
+export interface Project {
+  id: number
+  user_id: number
+  chat_id: number
+  name: string
+  working_dir: string
+  created_at: string
+  updated_at: string
+}
+
 export interface SessionWithMessageCount extends Session {
   message_count: number
+  project_name?: string
 }
 
 let db: Database.Database | null = null
@@ -45,10 +57,12 @@ export function getAllSessions(): SessionWithMessageCount[] {
   const database = getDb()
   const stmt = database.prepare(`
     SELECT
-      s.id, s.user_id, s.chat_id, s.name, s.state, s.created_at, s.updated_at,
-      COUNT(m.id) as message_count
+      s.id, s.user_id, s.chat_id, s.name, s.project_id, s.state, s.created_at, s.updated_at,
+      COUNT(m.id) as message_count,
+      p.name as project_name
     FROM sessions s
     LEFT JOIN messages m ON s.id = m.session_id
+    LEFT JOIN projects p ON s.project_id = p.id
     GROUP BY s.id
     ORDER BY s.updated_at DESC
   `)
@@ -59,7 +73,7 @@ export function getAllSessions(): SessionWithMessageCount[] {
 export function getSession(id: number): Session | undefined {
   const database = getDb()
   const stmt = database.prepare(`
-    SELECT id, user_id, chat_id, name, state, created_at, updated_at
+    SELECT id, user_id, chat_id, name, project_id, state, created_at, updated_at
     FROM sessions
     WHERE id = ?
   `)
@@ -70,24 +84,34 @@ export function getSession(id: number): Session | undefined {
 export function createSession(
   userId: number,
   chatId: number,
-  name: string
+  name: string,
+  projectId?: number | null
 ): Session {
   const database = getDb()
   const timestamp = new Date().toISOString()
   const state = "{}"
 
   const stmt = database.prepare(`
-    INSERT INTO sessions (user_id, chat_id, name, state, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO sessions (user_id, chat_id, name, project_id, state, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `)
 
-  const info = stmt.run(userId, chatId, name, state, timestamp, timestamp)
+  const info = stmt.run(
+    userId,
+    chatId,
+    name,
+    projectId ?? null,
+    state,
+    timestamp,
+    timestamp
+  )
 
   return {
     id: info.lastInsertRowid as number,
     user_id: userId,
     chat_id: chatId,
     name,
+    project_id: projectId ?? null,
     state,
     created_at: timestamp,
     updated_at: timestamp,
@@ -96,7 +120,8 @@ export function createSession(
 
 export function updateSession(
   id: number,
-  name: string
+  name: string,
+  projectId?: number | null
 ): { success: boolean; error?: string } {
   const database = getDb()
   const timestamp = new Date().toISOString()
@@ -104,11 +129,11 @@ export function updateSession(
   try {
     const stmt = database.prepare(`
       UPDATE sessions
-      SET name = ?, updated_at = ?
+      SET name = ?, project_id = ?, updated_at = ?
       WHERE id = ?
     `)
 
-    const info = stmt.run(name, timestamp, id)
+    const info = stmt.run(name, projectId ?? null, timestamp, id)
 
     return {
       success: info.changes > 0,
@@ -167,4 +192,121 @@ export function getSessionMessages(sessionId: number): Message[] {
   `)
 
   return stmt.all(sessionId) as Message[]
+}
+
+// ============================================================================
+// Project Management Functions
+// ============================================================================
+
+export function getAllProjects(): Project[] {
+  const database = getDb()
+  const stmt = database.prepare(`
+    SELECT id, user_id, chat_id, name, working_dir, created_at, updated_at
+    FROM projects
+    ORDER BY name ASC
+  `)
+
+  return stmt.all() as Project[]
+}
+
+export function getProject(id: number): Project | undefined {
+  const database = getDb()
+  const stmt = database.prepare(`
+    SELECT id, user_id, chat_id, name, working_dir, created_at, updated_at
+    FROM projects
+    WHERE id = ?
+  `)
+
+  return stmt.get(id) as Project | undefined
+}
+
+export function createProject(
+  userId: number,
+  chatId: number,
+  name: string,
+  workingDir: string
+): Project {
+  const database = getDb()
+  const timestamp = new Date().toISOString()
+
+  const stmt = database.prepare(`
+    INSERT INTO projects (user_id, chat_id, name, working_dir, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+
+  const info = stmt.run(userId, chatId, name, workingDir, timestamp, timestamp)
+
+  return {
+    id: info.lastInsertRowid as number,
+    user_id: userId,
+    chat_id: chatId,
+    name,
+    working_dir: workingDir,
+    created_at: timestamp,
+    updated_at: timestamp,
+  }
+}
+
+export function updateProject(
+  id: number,
+  name: string,
+  workingDir: string
+): { success: boolean; error?: string } {
+  const database = getDb()
+  const timestamp = new Date().toISOString()
+
+  try {
+    const stmt = database.prepare(`
+      UPDATE projects
+      SET name = ?, working_dir = ?, updated_at = ?
+      WHERE id = ?
+    `)
+
+    const info = stmt.run(name, workingDir, timestamp, id)
+
+    return {
+      success: info.changes > 0,
+      error: info.changes === 0 ? "Project not found" : undefined,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    }
+  }
+}
+
+export function deleteProject(id: number): {
+  success: boolean
+  error?: string
+} {
+  const database = getDb()
+
+  try {
+    // Check if any sessions are using this project
+    const sessionCheckStmt = database.prepare(`
+      SELECT COUNT(*) as count FROM sessions WHERE project_id = ?
+    `)
+    const result = sessionCheckStmt.get(id) as { count: number }
+
+    if (result.count > 0) {
+      return {
+        success: false,
+        error: `Cannot delete project. ${result.count} session(s) are using it.`,
+      }
+    }
+
+    const stmt = database.prepare("DELETE FROM projects WHERE id = ?")
+    const info = stmt.run(id)
+
+    return {
+      success: info.changes > 0,
+      error: info.changes === 0 ? "Project not found" : undefined,
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    }
+  }
 }

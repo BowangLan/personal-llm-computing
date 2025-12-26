@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition, useEffect } from "react"
+import { useState, useTransition } from "react"
 import { Plus } from "lucide-react"
 import { Button } from "@workspace/ui/components/button"
 import {
@@ -13,42 +13,28 @@ import {
   DialogTrigger,
 } from "@workspace/ui/components/dialog"
 import { Input } from "@workspace/ui/components/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@workspace/ui/components/select"
-import { createSession, getProjects } from "@/app/actions"
-import type { Project } from "@/lib/db"
+import { createProject } from "@/app/actions"
 
-export function CreateSessionDialog() {
+export function CreateProjectDialog() {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState("")
+  const [workingDir, setWorkingDir] = useState("")
   const [userId, setUserId] = useState("")
   const [chatId, setChatId] = useState("")
-  const [projectId, setProjectId] = useState<string>("")
-  const [projects, setProjects] = useState<Project[]>([])
   const [error, setError] = useState("")
   const [isPending, startTransition] = useTransition()
-
-  useEffect(() => {
-    if (open) {
-      getProjects().then((result) => {
-        if (result.success) {
-          setProjects(result.data || [])
-        }
-      })
-    }
-  }, [open])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
 
     if (!name.trim()) {
-      setError("Session name is required")
+      setError("Project name is required")
+      return
+    }
+
+    if (!workingDir.trim()) {
+      setError("Working directory is required")
       return
     }
 
@@ -66,22 +52,21 @@ export function CreateSessionDialog() {
     }
 
     startTransition(async () => {
-      const projectIdNum = projectId ? parseInt(projectId, 10) : null
-      const result = await createSession(
+      const result = await createProject(
         userIdNum,
         chatIdNum,
         name.trim(),
-        projectIdNum
+        workingDir.trim()
       )
 
       if (result.success) {
         setOpen(false)
         setName("")
+        setWorkingDir("")
         setUserId("")
         setChatId("")
-        setProjectId("")
       } else {
-        setError(result.error || "Failed to create session")
+        setError(result.error || "Failed to create project")
       }
     })
   }
@@ -91,28 +76,41 @@ export function CreateSessionDialog() {
       <DialogTrigger asChild>
         <Button>
           <Plus className="mr-2 h-4 w-4" />
-          New Session
+          New Project
         </Button>
       </DialogTrigger>
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>Create New Session</DialogTitle>
+            <DialogTitle>Create New Project</DialogTitle>
             <DialogDescription>
-              Create a new conversation session for the Telegram bot.
+              Create a new project with a working directory for the bot.
             </DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
               <label htmlFor="name" className="text-sm font-medium">
-                Session Name
+                Project Name
               </label>
               <Input
                 id="name"
-                placeholder="e.g., General Chat"
+                placeholder="e.g., My App"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                disabled={isPending}
+              />
+            </div>
+
+            <div className="grid gap-2">
+              <label htmlFor="workingDir" className="text-sm font-medium">
+                Working Directory
+              </label>
+              <Input
+                id="workingDir"
+                placeholder="e.g., /home/user/projects/my-app"
+                value={workingDir}
+                onChange={(e) => setWorkingDir(e.target.value)}
                 disabled={isPending}
               />
             </div>
@@ -145,32 +143,7 @@ export function CreateSessionDialog() {
               />
             </div>
 
-            <div className="grid gap-2">
-              <label htmlFor="projectId" className="text-sm font-medium">
-                Project (Optional)
-              </label>
-              <Select
-                value={projectId}
-                onValueChange={setProjectId}
-                disabled={isPending}
-              >
-                <SelectTrigger id="projectId">
-                  <SelectValue placeholder="No project" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">No project</SelectItem>
-                  {projects.map((project) => (
-                    <SelectItem key={project.id} value={project.id.toString()}>
-                      {project.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {error && (
-              <p className="text-sm text-destructive">{error}</p>
-            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
           </div>
 
           <DialogFooter>
@@ -183,7 +156,7 @@ export function CreateSessionDialog() {
               Cancel
             </Button>
             <Button type="submit" disabled={isPending}>
-              {isPending ? "Creating..." : "Create Session"}
+              {isPending ? "Creating..." : "Create Project"}
             </Button>
           </DialogFooter>
         </form>
