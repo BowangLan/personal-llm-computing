@@ -9,6 +9,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "install:bot": "cd apps/bot && uv sync",
     "dev:bot": "cd apps/bot && doppler run -- uv run watchfiles 'uv run bot.py'",
+    "dev:web": "cd apps/web && pnpm dev",
     "start:bot": "cd apps/bot && doppler run -- uv run bot.py"
   },
   "devDependencies": {
