@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from pathlib import Path
 
 from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import Application, ContextTypes
@@ -23,6 +24,10 @@ from persistence import (
     delete_session,
     get_session,
     update_session_state,
+    create_project,
+    list_projects,
+    get_project,
+    delete_project,
 )
 
 _logger = logging.getLogger("bot.handlers")
@@ -89,6 +94,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # Check if we're waiting for a project name
+        if 'awaiting_project_name' in context.user_data:
+            context.user_data.pop('awaiting_project_name')
+            project_name = user_input
+
+            # Store the name and ask for working directory
+            context.user_data['awaiting_project_dir'] = project_name
+
+            await update.message.reply_text(
+                f"Project name: *{project_name}*\n\nNow enter the working directory path:",
+                parse_mode="Markdown",
+                reply_markup=ForceReply(selective=True)
+            )
+            return
+
+        # Check if we're waiting for a project directory
+        if 'awaiting_project_dir' in context.user_data:
+            project_name = context.user_data.pop('awaiting_project_dir')
+            working_dir = user_input
+
+            # Resolve path to absolute path (handles ~, .., ., etc.)
+            try:
+                resolved_path = Path(working_dir).expanduser().resolve()
+                working_dir_absolute = str(resolved_path)
+            except Exception as e:
+                await update.message.reply_text(
+                    f"❌ Invalid path: {e}\n\nPlease try again with /newproject",
+                    parse_mode="Markdown"
+                )
+                return
+
+            # Create the project
+            project = create_project(user_id, chat_id, project_name, working_dir_absolute)
+
+            log_event(_logger, "project_created", project_id=project.id, project_name=project.name, working_dir=working_dir_absolute)
+            await update.message.reply_text(
+                f"✨ Created project:\n`{project.name}` → `{project.working_dir}`\n(ID: {project.id})",
+                parse_mode="Markdown"
+            )
+            return
+
         log_event(
             _logger,
             "message_received",
@@ -128,12 +174,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
 
+            # Get project working directory if session is associated with a project
+            working_dir = None
+            if session.project_id:
+                project = get_project(session.project_id)
+                if project:
+                    working_dir = project.working_dir
+                    log_event(_logger, "using_project_cwd", project_id=session.project_id, working_dir=working_dir)
+
             # Get LLM reply with past messages and session state as context
             await status_msg.edit_text("🤖 Getting LLM response...")
             reply, updated_state = await llm_reply(
                 user_input,
                 past_messages=past_messages,
-                session_state=session.state
+                session_state=session.state,
+                working_dir=working_dir
             )
 
             # Save both user message and assistant response to session
@@ -170,14 +225,38 @@ async def handle_newsession(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Get optional session name from args
         session_name = " ".join(context.args) if context.args else None
 
-        # Create new session
-        session = create_session(user_id, chat_id, session_name)
-        set_active_session(user_id, chat_id, session.id)
+        # Get list of projects
+        projects = list_projects(user_id, chat_id)
 
-        log_event(_logger, "new_session_created", session_id=session.id, session_name=session.name)
+        if not projects:
+            # No projects available - create session without project
+            session = create_session(user_id, chat_id, session_name)
+            set_active_session(user_id, chat_id, session.id)
+
+            log_event(_logger, "new_session_created", session_id=session.id, session_name=session.name)
+            await update.message.reply_text(
+                f"✨ Created and switched to new session:\n`{session.name}` (ID: {session.id})",
+                parse_mode="Markdown"
+            )
+            return
+
+        # Show project selection inline keyboard
+        # Store the session name in user_data for later use
+        context.user_data['pending_session_name'] = session_name
+
+        keyboard = []
+        # Add "No Project" option
+        keyboard.append([InlineKeyboardButton("(No Project)", callback_data="newses_project:none")])
+
+        # Add each project as an option
+        for project in projects:
+            button_text = f"{project.name} → {project.working_dir}"
+            callback_data = f"newses_project:{project.id}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+
         await update.message.reply_text(
-            f"✨ Created and switched to new session:\n`{session.name}` (ID: {session.id})",
-            parse_mode="Markdown"
+            "Select a project for the new session:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
 
@@ -383,6 +462,10 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "- /switch <id> — switch to session\n"
             "- /renamesession — rename current session\n"
             "- /delsession <id> — delete session\n\n"
+            "Project management:\n"
+            "- /projects — list all projects\n"
+            "- /newproject — create new project\n"
+            "- /delproject <id> — delete project\n\n"
             "Other commands:\n"
             "- /bg <command> — run command in background\n"
             "- /status — show background tasks",
@@ -397,18 +480,91 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Usage:\n"
             "- Send messages to chat with the LLM.\n"
-            "- Each conversation is organized into sessions.\n\n"
+            "- Each conversation is organized into sessions.\n"
+            "- Sessions can be associated with projects that have working directories.\n\n"
             "Session management:\n"
             "- /sessions — list all sessions\n"
             "- /newsession [name] — create new session\n"
             "- /switch <id> — switch to session\n"
             "- /renamesession — rename current session\n"
             "- /delsession <id> — delete session\n\n"
+            "Project management:\n"
+            "- /projects — list all projects\n"
+            "- /newproject — create new project\n"
+            "- /delproject <id> — delete project\n\n"
             "Other commands:\n"
             "- /bg <command> — run command in background\n"
             "- /status — show background tasks",
             parse_mode="Markdown",
         )
+
+
+async def handle_newproject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Create a new project. Usage: /newproject"""
+    async with bind_update(update, "newproject"):
+        if update.effective_user.id not in ALLOWED_USERS:
+            return
+
+        # Set flag to indicate we're waiting for project name
+        context.user_data['awaiting_project_name'] = True
+
+        # Prompt user for project name
+        await update.message.reply_text(
+            "Enter the project name:",
+            reply_markup=ForceReply(selective=True)
+        )
+        log_event(_logger, "project_name_prompted")
+
+
+async def handle_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all projects. Usage: /projects"""
+    async with bind_update(update, "projects"):
+        if update.effective_user.id not in ALLOWED_USERS:
+            return
+
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        projects = list_projects(user_id, chat_id)
+
+        if not projects:
+            await update.message.reply_text("No projects found. Create one with /newproject")
+            return
+
+        # Build project list message
+        lines = ["📁 Your projects:\n"]
+        for project in projects:
+            lines.append(f"• `{project.name}` (ID: {project.id})")
+            lines.append(f"  → `{project.working_dir}`")
+
+        log_event(_logger, "projects_listed", project_count=len(projects))
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def handle_delproject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delete a project. Usage: /delproject <project_id>"""
+    async with bind_update(update, "delproject"):
+        if update.effective_user.id not in ALLOWED_USERS:
+            return
+
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        if not context.args or not context.args[0].isdigit():
+            await update.message.reply_text("Usage: /delproject <project_id>")
+            return
+
+        project_id = int(context.args[0])
+
+        # Verify project exists and belongs to user
+        project = get_project(project_id)
+        if not project or project.user_id != user_id or project.chat_id != chat_id:
+            await update.message.reply_text(f"❌ Project {project_id} not found.")
+            return
+
+        delete_project(project_id)
+        log_event(_logger, "project_deleted", project_id=project_id)
+        await update.message.reply_text(f"✓ Deleted project {project_id}")
 
 
 async def handle_session_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -460,6 +616,34 @@ async def handle_session_callback(update: Update, context: ContextTypes.DEFAULT_
             else:
                 await query.edit_message_text(f"✓ Switched to session: `{session.name}` (ID: {session_id})", parse_mode="Markdown")
 
+        elif data.startswith("newses_project:"):
+            # Handle new session with project selection
+            project_id_str = data.split(":")[1]
+            project_id = None if project_id_str == "none" else int(project_id_str)
+
+            # Get the session name from user_data
+            session_name = context.user_data.get('pending_session_name')
+
+            # Create new session with the selected project
+            session = create_session(user_id, chat_id, session_name, project_id)
+            set_active_session(user_id, chat_id, session.id)
+
+            # Clean up user_data
+            context.user_data.pop('pending_session_name', None)
+
+            # Build success message
+            project_info = ""
+            if project_id:
+                project = get_project(project_id)
+                if project:
+                    project_info = f"\nProject: `{project.name}` → `{project.working_dir}`"
+
+            log_event(_logger, "new_session_created", session_id=session.id, session_name=session.name, project_id=project_id)
+            await query.edit_message_text(
+                f"✨ Created and switched to new session:\n`{session.name}` (ID: {session.id}){project_info}",
+                parse_mode="Markdown"
+            )
+
     except Exception as e:
         _logger.exception("Error handling session callback")
         await query.edit_message_text(f"❌ Error: {e}")
@@ -476,6 +660,9 @@ async def post_init(application: Application) -> None:
             BotCommand("switch", "Switch to a session"),
             BotCommand("renamesession", "Rename current session"),
             BotCommand("delsession", "Delete a session"),
+            BotCommand("projects", "List all projects"),
+            BotCommand("newproject", "Create a new project"),
+            BotCommand("delproject", "Delete a project"),
             BotCommand("bg", "Run a command in background"),
             BotCommand("status", "Show last tracked tasks"),
         ]

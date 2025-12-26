@@ -115,10 +115,11 @@ User message: {user_input}"""
     return title
 
 
-async def llm_reply(user_input: str, past_messages: List[Message] = None, session_state: dict = None) -> tuple[str, dict]:
+async def llm_reply(user_input: str, past_messages: List[Message] = None, session_state: dict = None, working_dir: str = None) -> tuple[str, dict]:
     """
     General chat response for normal text messages.
     Uses past messages from the active session as context.
+    If working_dir is provided, it will be set as the cwd for tool execution.
     Returns (response, updated_state) tuple.
     """
     t0 = time.perf_counter()
@@ -140,10 +141,13 @@ async def llm_reply(user_input: str, past_messages: List[Message] = None, sessio
     # Format session state for prompt
     state_section = f"\n\nCurrent session state: {json.dumps(session_state, indent=2)}\n"
 
+    # Add working directory information if available
+    working_dir_section = f"\n\nWorking directory: {working_dir}\n" if working_dir else ""
+
     prompt = f"""You are a helpful assistant in a Telegram chat.
 Answer clearly and concisely.
 If the user asks you to run shell commands, tell them to prefix with 'run:' and describe what will happen.
-{conversation_history}{state_section}
+{conversation_history}{state_section}{working_dir_section}
 IMPORTANT: You have access to a session state object that persists across messages in this conversation.
 You can modify this state in any way you want to keep track of information, context, or anything else you find useful.
 Use it as a memory sink for the session. Update it with relevant information from the conversation.
@@ -165,13 +169,19 @@ User message: {user_input}"""
         "required": ["response", "updated_state"]
     }
 
+    # Build ClaudeAgentOptions with cwd if working_dir is provided
+    options_kwargs = {
+        "allowed_tools": ["Read", "Edit", "Bash", "Glob", "WebSearch", "WebFetch"],
+        "output_format": {"type": "json_schema", "schema": schema},
+        "permission_mode": "bypassPermissions"
+    }
+    if working_dir:
+        options_kwargs["cwd"] = working_dir
+
     result = None
     async for message in query(
         prompt=prompt,
-        options=ClaudeAgentOptions(
-            allowed_tools=["Read", "Edit", "Bash", "Glob", "WebSearch", "WebFetch"],
-            output_format={"type": "json_schema", "schema": schema}
-        ),
+        options=ClaudeAgentOptions(**options_kwargs),
     ):
         if hasattr(message, "structured_output"):
             result = message.structured_output
@@ -186,6 +196,7 @@ User message: {user_input}"""
         output_len=len(reply),
         context_count=len(past_messages) if past_messages else 0,
         state_updated=updated_state != session_state,
+        has_working_dir=working_dir is not None,
         duration_ms=int((time.perf_counter() - t0) * 1000),
     )
     return reply, updated_state

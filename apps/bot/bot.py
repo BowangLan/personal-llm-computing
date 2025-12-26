@@ -15,6 +15,9 @@ from handlers import (
     handle_switch,
     handle_rename,
     handle_delsession,
+    handle_newproject,
+    handle_projects,
+    handle_delproject,
     handle_session_callback,
     error_handler,
     post_init,
@@ -52,6 +55,9 @@ def main():
     app.add_handler(CommandHandler("switch", handle_switch))
     app.add_handler(CommandHandler("renamesession", handle_rename))
     app.add_handler(CommandHandler("delsession", handle_delsession))
+    app.add_handler(CommandHandler("newproject", handle_newproject))
+    app.add_handler(CommandHandler("projects", handle_projects))
+    app.add_handler(CommandHandler("delproject", handle_delproject))
     app.add_handler(CommandHandler("bg", handle_background))
     app.add_handler(CommandHandler("status", handle_status))
 

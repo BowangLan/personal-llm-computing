@@ -14,12 +14,25 @@ DB_PATH = Path(__file__).parent / "bot_data.db"
 
 
 @dataclass
+class Project:
+    """Represents a project with a working directory."""
+    id: Optional[int]
+    user_id: int
+    chat_id: int
+    name: str
+    working_dir: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
 class Session:
     """Represents a conversation session."""
     id: Optional[int]
     user_id: int
     chat_id: int
     name: str
+    project_id: Optional[int]  # Optional reference to a project
     state: dict  # JSON object for session state
     created_at: str
     updated_at: str
@@ -53,6 +66,19 @@ def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
 
+        # Projects table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                working_dir TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
         # Sessions table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
@@ -60,9 +86,11 @@ def init_db():
                 user_id INTEGER NOT NULL,
                 chat_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
+                project_id INTEGER,
                 state TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
             )
         """)
 
@@ -72,6 +100,11 @@ def init_db():
         if "state" not in columns:
             cursor.execute("ALTER TABLE sessions ADD COLUMN state TEXT NOT NULL DEFAULT '{}'")
             _logger.info("Added state column to sessions table")
+
+        # Migration: Add project_id column if it doesn't exist (for existing databases)
+        if "project_id" not in columns:
+            cursor.execute("ALTER TABLE sessions ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
+            _logger.info("Added project_id column to sessions table")
 
         # Messages table
         cursor.execute("""
@@ -100,8 +133,18 @@ def init_db():
 
         # Indexes for performance
         cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_projects_user_chat
+            ON projects(user_id, chat_id)
+        """)
+
+        cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_sessions_user_chat
             ON sessions(user_id, chat_id)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sessions_project
+            ON sessions(project_id)
         """)
 
         cursor.execute("""
@@ -113,7 +156,7 @@ def init_db():
         _logger.info("Database initialized at %s", DB_PATH)
 
 
-def create_session(user_id: int, chat_id: int, name: str = None) -> Session:
+def create_session(user_id: int, chat_id: int, name: str = None, project_id: int = None) -> Session:
     """Create a new session and return it."""
     if name is None:
         name = f"Session {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
@@ -124,18 +167,19 @@ def create_session(user_id: int, chat_id: int, name: str = None) -> Session:
         initial_state = "{}"
 
         cursor.execute(
-            "INSERT INTO sessions (user_id, chat_id, name, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, chat_id, name, initial_state, timestamp, timestamp)
+            "INSERT INTO sessions (user_id, chat_id, name, project_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, chat_id, name, project_id, initial_state, timestamp, timestamp)
         )
         session_id = cursor.lastrowid
         conn.commit()
 
-        _logger.info("Created session %d for user %d in chat %d", session_id, user_id, chat_id)
+        _logger.info("Created session %d for user %d in chat %d (project: %s)", session_id, user_id, chat_id, project_id)
         return Session(
             id=session_id,
             user_id=user_id,
             chat_id=chat_id,
             name=name,
+            project_id=project_id,
             state={},
             created_at=timestamp,
             updated_at=timestamp
@@ -157,7 +201,7 @@ def get_active_session(user_id: int, chat_id: int) -> Optional[Session]:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT s.id, s.user_id, s.chat_id, s.name, s.state, s.created_at, s.updated_at
+            SELECT s.id, s.user_id, s.chat_id, s.name, s.project_id, s.state, s.created_at, s.updated_at
             FROM sessions s
             JOIN active_sessions a ON s.id = a.session_id
             WHERE a.user_id = ? AND a.chat_id = ?
@@ -172,6 +216,7 @@ def get_active_session(user_id: int, chat_id: int) -> Optional[Session]:
             user_id=row["user_id"],
             chat_id=row["chat_id"],
             name=row["name"],
+            project_id=row["project_id"],
             state=json.loads(row["state"]) if row["state"] else {},
             created_at=row["created_at"],
             updated_at=row["updated_at"]
@@ -212,7 +257,7 @@ def list_sessions(user_id: int, chat_id: int, limit: int = None, offset: int = 0
         cursor = conn.cursor()
         query = """
             SELECT
-                s.id, s.user_id, s.chat_id, s.name, s.state, s.created_at, s.updated_at,
+                s.id, s.user_id, s.chat_id, s.name, s.project_id, s.state, s.created_at, s.updated_at,
                 COUNT(m.id) as message_count,
                 MAX(CASE WHEN m.role = 'user' THEN m.timestamp END) as last_user_message_time
             FROM sessions s
@@ -237,6 +282,7 @@ def list_sessions(user_id: int, chat_id: int, limit: int = None, offset: int = 0
                     user_id=row["user_id"],
                     chat_id=row["chat_id"],
                     name=row["name"],
+                    project_id=row["project_id"],
                     state=json.loads(row["state"]) if row["state"] else {},
                     created_at=row["created_at"],
                     updated_at=row["updated_at"]
@@ -264,7 +310,7 @@ def get_session(session_id: int) -> Optional[Session]:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, user_id, chat_id, name, state, created_at, updated_at FROM sessions WHERE id = ?",
+            "SELECT id, user_id, chat_id, name, project_id, state, created_at, updated_at FROM sessions WHERE id = ?",
             (session_id,)
         )
         row = cursor.fetchone()
@@ -276,6 +322,7 @@ def get_session(session_id: int) -> Optional[Session]:
             user_id=row["user_id"],
             chat_id=row["chat_id"],
             name=row["name"],
+            project_id=row["project_id"],
             state=json.loads(row["state"]) if row["state"] else {},
             created_at=row["created_at"],
             updated_at=row["updated_at"]
@@ -376,3 +423,117 @@ def get_session_messages(session_id: int, limit: int = 20) -> List[Message]:
 
         _logger.info("Retrieved %d messages from session %d", len(messages), session_id)
         return messages
+
+
+# ============================================================================
+# Project Management Functions
+# ============================================================================
+
+def create_project(user_id: int, chat_id: int, name: str, working_dir: str) -> Project:
+    """Create a new project and return it."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        timestamp = datetime.utcnow().isoformat()
+
+        cursor.execute(
+            "INSERT INTO projects (user_id, chat_id, name, working_dir, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, chat_id, name, working_dir, timestamp, timestamp)
+        )
+        project_id = cursor.lastrowid
+        conn.commit()
+
+        _logger.info("Created project %d for user %d in chat %d: %s -> %s", project_id, user_id, chat_id, name, working_dir)
+        return Project(
+            id=project_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            name=name,
+            working_dir=working_dir,
+            created_at=timestamp,
+            updated_at=timestamp
+        )
+
+
+def list_projects(user_id: int, chat_id: int) -> List[Project]:
+    """List all projects for a user/chat."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, user_id, chat_id, name, working_dir, created_at, updated_at FROM projects WHERE user_id = ? AND chat_id = ? ORDER BY name",
+            (user_id, chat_id)
+        )
+        rows = cursor.fetchall()
+        return [
+            Project(
+                id=row["id"],
+                user_id=row["user_id"],
+                chat_id=row["chat_id"],
+                name=row["name"],
+                working_dir=row["working_dir"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"]
+            )
+            for row in rows
+        ]
+
+
+def get_project(project_id: int) -> Optional[Project]:
+    """Get a project by ID."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, user_id, chat_id, name, working_dir, created_at, updated_at FROM projects WHERE id = ?",
+            (project_id,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+
+        return Project(
+            id=row["id"],
+            user_id=row["user_id"],
+            chat_id=row["chat_id"],
+            name=row["name"],
+            working_dir=row["working_dir"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"]
+        )
+
+
+def update_project(project_id: int, name: str = None, working_dir: str = None):
+    """Update a project's name and/or working directory."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        timestamp = datetime.utcnow().isoformat()
+
+        updates = []
+        params = []
+
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+
+        if working_dir is not None:
+            updates.append("working_dir = ?")
+            params.append(working_dir)
+
+        if not updates:
+            return
+
+        updates.append("updated_at = ?")
+        params.append(timestamp)
+        params.append(project_id)
+
+        query = f"UPDATE projects SET {', '.join(updates)} WHERE id = ?"
+        cursor.execute(query, params)
+        conn.commit()
+        _logger.info("Updated project %d", project_id)
+
+
+def delete_project(project_id: int):
+    """Delete a project. Sessions using this project will have their project_id set to NULL."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        conn.commit()
+        _logger.info("Deleted project %d", project_id)
