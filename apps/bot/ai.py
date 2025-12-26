@@ -66,6 +66,55 @@ User request: {user_input}"""
     return commands
 
 
+async def generate_session_title(user_input: str) -> str:
+    """
+    Generate a concise title for a new session based on the first user message.
+    Returns a short, descriptive title (max 50 chars).
+    """
+    t0 = time.perf_counter()
+
+    prompt = f"""Generate a short, concise title (max 50 characters) for a conversation session based on this first user message.
+The title should capture the main topic or intent.
+Be specific and descriptive, but brief.
+
+User message: {user_input}"""
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "A short, descriptive title for the session (max 50 chars)"
+            }
+        },
+        "required": ["title"]
+    }
+
+    result = None
+    async for message in query(
+        prompt=prompt,
+        options=ClaudeAgentOptions(
+            allowed_tools=[],
+            output_format={"type": "json_schema", "schema": schema}
+        )
+    ):
+        if hasattr(message, "structured_output"):
+            result = message.structured_output
+
+    title = result.get("title", "New Session") if result else "New Session"
+    # Ensure title is not too long
+    if len(title) > 50:
+        title = title[:47] + "..."
+
+    log_event(
+        _logger,
+        "session_title_generated",
+        title=title,
+        duration_ms=int((time.perf_counter() - t0) * 1000),
+    )
+    return title
+
+
 async def llm_reply(user_input: str, past_messages: List[Message] = None, session_state: dict = None) -> tuple[str, dict]:
     """
     General chat response for normal text messages.

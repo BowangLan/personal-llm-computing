@@ -50,7 +50,7 @@ def main():
     app.add_handler(CommandHandler("newsession", handle_newsession))
     app.add_handler(CommandHandler("sessions", handle_sessions))
     app.add_handler(CommandHandler("switch", handle_switch))
-    app.add_handler(CommandHandler("rename", handle_rename))
+    app.add_handler(CommandHandler("renamesession", handle_rename))
     app.add_handler(CommandHandler("delsession", handle_delsession))
     app.add_handler(CommandHandler("bg", handle_background))
     app.add_handler(CommandHandler("status", handle_status))

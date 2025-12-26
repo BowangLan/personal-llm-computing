@@ -2,11 +2,11 @@ import asyncio
 import logging
 import uuid
 
-from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import Application, ContextTypes
 from telegram.constants import ParseMode
 
-from ai import llm_reply
+from ai import llm_reply, generate_session_title
 from config import ALLOWED_USERS
 from executor import run_background_task, Task, tasks
 from observability import bind_update, log_event
@@ -30,6 +30,8 @@ _logger = logging.getLogger("bot.handlers")
 
 def escape_markdown_v2(text: str) -> str:
     """Escape special characters for Telegram MarkdownV2."""
+    # Escape backslash FIRST, then other special characters
+    text = text.replace('\\', '\\\\')
     special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
     for char in special_chars:
         text = text.replace(char, f'\\{char}')
@@ -68,6 +70,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not user_input:
             return
 
+        # Check if we're waiting for a rename response
+        if 'awaiting_rename' in context.user_data:
+            session_id = context.user_data.pop('awaiting_rename')
+            new_name = user_input
+
+            # Verify session still exists and belongs to user
+            session = get_session(session_id)
+            if not session or session.user_id != user_id or session.chat_id != chat_id:
+                await update.message.reply_text("❌ Session no longer exists.")
+                return
+
+            rename_session(session_id, new_name)
+            log_event(_logger, "session_renamed", session_id=session_id, new_name=new_name)
+            await update.message.reply_text(
+                f"✓ Renamed session to: *{new_name}*",
+                parse_mode="Markdown"
+            )
+            return
+
         log_event(
             _logger,
             "message_received",
@@ -89,6 +110,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Load recent messages from session (last 20 messages = ~10 exchanges)
             await status_msg.edit_text("💬 Loading context...")
             past_messages = get_session_messages(session.id, limit=20)
+
+            # Check if this is the first user message in the session
+            has_user_messages = any(msg.role == "user" for msg in past_messages)
+            is_first_message = not has_user_messages
+
+            # Generate and update session title if this is the first message
+            if is_first_message:
+                await status_msg.edit_text("✨ Generating session title...")
+                new_title = await generate_session_title(user_input)
+                rename_session(session.id, new_title)
+                log_event(_logger, "session_title_auto_generated", session_id=session.id, title=new_title)
+
+                # Notify user about the generated session title
+                await update.message.reply_text(
+                    f"📝 Session titled: `{new_title}`",
+                    parse_mode="Markdown"
+                )
 
             # Get LLM reply with past messages and session state as context
             await status_msg.edit_text("🤖 Getting LLM response...")
@@ -232,7 +270,7 @@ async def handle_switch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_rename(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Rename a session. Usage: /rename <session_id> <new_name>"""
+    """Rename the current active session. Usage: /renamesession"""
     async with bind_update(update, "rename"):
         if update.effective_user.id not in ALLOWED_USERS:
             return
@@ -240,25 +278,22 @@ async def handle_rename(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
 
-        if len(context.args) < 2 or not context.args[0].isdigit():
-            await update.message.reply_text("Usage: /rename <session_id> <new_name>")
+        # Get the active session
+        session = get_active_session(user_id, chat_id)
+        if not session:
+            await update.message.reply_text("❌ No active session found. Create one with /newsession first.")
             return
 
-        session_id = int(context.args[0])
-        new_name = " ".join(context.args[1:])
+        # Store the session ID in user_data to track that we're waiting for a new name
+        context.user_data['awaiting_rename'] = session.id
 
-        # Verify session exists and belongs to user
-        session = get_session(session_id)
-        if not session or session.user_id != user_id or session.chat_id != chat_id:
-            await update.message.reply_text(f"❌ Session {session_id} not found.")
-            return
-
-        rename_session(session_id, new_name)
-        log_event(_logger, "session_renamed", session_id=session_id, new_name=new_name)
+        # Prompt user for new name
         await update.message.reply_text(
-            f"✓ Renamed session {session_id} to: `{new_name}`",
-            parse_mode="Markdown"
+            f"Current session name: *{session.name}*\n\nWhat would you like to rename it to?",
+            parse_mode="Markdown",
+            reply_markup=ForceReply(selective=True)
         )
+        log_event(_logger, "rename_prompted", session_id=session.id)
 
 
 async def handle_delsession(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -346,7 +381,7 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "- /sessions — list all sessions\n"
             "- /newsession [name] — create new session\n"
             "- /switch <id> — switch to session\n"
-            "- /rename <id> <name> — rename session\n"
+            "- /renamesession — rename current session\n"
             "- /delsession <id> — delete session\n\n"
             "Other commands:\n"
             "- /bg <command> — run command in background\n"
@@ -367,7 +402,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "- /sessions — list all sessions\n"
             "- /newsession [name] — create new session\n"
             "- /switch <id> — switch to session\n"
-            "- /rename <id> <name> — rename session\n"
+            "- /renamesession — rename current session\n"
             "- /delsession <id> — delete session\n\n"
             "Other commands:\n"
             "- /bg <command> — run command in background\n"
@@ -439,7 +474,7 @@ async def post_init(application: Application) -> None:
             BotCommand("sessions", "List all sessions"),
             BotCommand("newsession", "Create a new session"),
             BotCommand("switch", "Switch to a session"),
-            BotCommand("rename", "Rename a session"),
+            BotCommand("renamesession", "Rename current session"),
             BotCommand("delsession", "Delete a session"),
             BotCommand("bg", "Run a command in background"),
             BotCommand("status", "Show last tracked tasks"),
