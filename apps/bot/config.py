@@ -6,3 +6,4 @@ ALLOWED_USERS = [int(uid.strip()) for uid in _allowed_users_env.split(",") if ui
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+ERROR_LOG_FILE = os.getenv("ERROR_LOG_FILE", "error.log")

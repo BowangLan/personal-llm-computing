@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from telegram import Update
 
-from config import LOG_LEVEL
+from config import LOG_LEVEL, ERROR_LOG_FILE
 
 # ---- Context Vars ----
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
@@ -46,7 +46,7 @@ def configure_logging() -> None:
         )
     except ImportError:
         handler = logging.StreamHandler()
-    
+
     handler.setLevel(level)
     handler.addFilter(ContextFilter())
     handler.setFormatter(
@@ -58,6 +58,18 @@ def configure_logging() -> None:
 
     root.setLevel(level)
     root.addHandler(handler)
+
+    # Add file handler for errors
+    file_handler = logging.FileHandler(ERROR_LOG_FILE, encoding='utf-8')
+    file_handler.setLevel(logging.ERROR)
+    file_handler.addFilter(ContextFilter())
+    file_handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s %(levelname)s %(name)s "
+            "[rid=%(request_id)s uid=%(user_id)s cid=%(chat_id)s h=%(handler)s] %(message)s"
+        )
+    )
+    root.addHandler(file_handler)
 
 
 def log_event(logger: logging.Logger, event: str, **fields: Any) -> None:
