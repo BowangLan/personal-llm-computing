@@ -24,6 +24,7 @@ from persistence import (
     delete_session,
     get_session,
     update_session_state,
+    update_claude_session_id,
     create_project,
     list_projects,
     get_project,
@@ -153,7 +154,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session = get_or_create_active_session(user_id, chat_id)
             log_event(_logger, "session_loaded", session_id=session.id, session_name=session.name)
 
-            # Load recent messages from session (last 20 messages = ~10 exchanges)
+            # Load recent messages from session to check if this is the first message
             await status_msg.edit_text("💬 Loading context...")
             past_messages = get_session_messages(session.id, limit=20)
 
@@ -182,12 +183,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     working_dir = project.working_dir
                     log_event(_logger, "using_project_cwd", project_id=session.project_id, working_dir=working_dir)
 
-            # Get LLM reply with past messages and session state as context
+            # Get LLM reply using Claude session management
             await status_msg.edit_text("🤖 Getting LLM response...")
-            reply, updated_state = await llm_reply(
+            reply, claude_session_id = await llm_reply(
                 user_input,
-                past_messages=past_messages,
-                session_state=session.state,
+                claude_session_id=session.claude_session_id,
                 working_dir=working_dir
             )
 
@@ -196,10 +196,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_message(session.id, user_id, chat_id, "user", user_input)
             save_message(session.id, user_id, chat_id, "assistant", reply)
 
-            # Update session state if it changed
-            if updated_state != session.state:
-                update_session_state(session.id, updated_state)
-                log_event(_logger, "session_state_updated", session_id=session.id)
+            # Update Claude session ID if this was the first message
+            if is_first_message and claude_session_id and claude_session_id != session.claude_session_id:
+                update_claude_session_id(session.id, claude_session_id)
+                log_event(_logger, "claude_session_id_saved", session_id=session.id, claude_session_id=claude_session_id)
 
             # Delete status message before sending actual response
             await status_msg.delete()

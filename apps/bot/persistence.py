@@ -33,6 +33,7 @@ class Session:
     chat_id: int
     name: str
     project_id: Optional[int]  # Optional reference to a project
+    claude_session_id: Optional[str]  # Claude Agent SDK session ID
     state: dict  # JSON object for session state
     created_at: str
     updated_at: str
@@ -87,6 +88,7 @@ def init_db():
                 chat_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 project_id INTEGER,
+                claude_session_id TEXT,
                 state TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -105,6 +107,11 @@ def init_db():
         if "project_id" not in columns:
             cursor.execute("ALTER TABLE sessions ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
             _logger.info("Added project_id column to sessions table")
+
+        # Migration: Add claude_session_id column if it doesn't exist (for existing databases)
+        if "claude_session_id" not in columns:
+            cursor.execute("ALTER TABLE sessions ADD COLUMN claude_session_id TEXT")
+            _logger.info("Added claude_session_id column to sessions table")
 
         # Messages table
         cursor.execute("""
@@ -167,8 +174,8 @@ def create_session(user_id: int, chat_id: int, name: str = None, project_id: int
         initial_state = "{}"
 
         cursor.execute(
-            "INSERT INTO sessions (user_id, chat_id, name, project_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, chat_id, name, project_id, initial_state, timestamp, timestamp)
+            "INSERT INTO sessions (user_id, chat_id, name, project_id, claude_session_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, chat_id, name, project_id, None, initial_state, timestamp, timestamp)
         )
         session_id = cursor.lastrowid
         conn.commit()
@@ -180,6 +187,7 @@ def create_session(user_id: int, chat_id: int, name: str = None, project_id: int
             chat_id=chat_id,
             name=name,
             project_id=project_id,
+            claude_session_id=None,
             state={},
             created_at=timestamp,
             updated_at=timestamp
@@ -201,7 +209,7 @@ def get_active_session(user_id: int, chat_id: int) -> Optional[Session]:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT s.id, s.user_id, s.chat_id, s.name, s.project_id, s.state, s.created_at, s.updated_at
+            SELECT s.id, s.user_id, s.chat_id, s.name, s.project_id, s.claude_session_id, s.state, s.created_at, s.updated_at
             FROM sessions s
             JOIN active_sessions a ON s.id = a.session_id
             WHERE a.user_id = ? AND a.chat_id = ?
@@ -217,6 +225,7 @@ def get_active_session(user_id: int, chat_id: int) -> Optional[Session]:
             chat_id=row["chat_id"],
             name=row["name"],
             project_id=row["project_id"],
+            claude_session_id=row["claude_session_id"],
             state=json.loads(row["state"]) if row["state"] else {},
             created_at=row["created_at"],
             updated_at=row["updated_at"]
@@ -257,7 +266,7 @@ def list_sessions(user_id: int, chat_id: int, limit: int = None, offset: int = 0
         cursor = conn.cursor()
         query = """
             SELECT
-                s.id, s.user_id, s.chat_id, s.name, s.project_id, s.state, s.created_at, s.updated_at,
+                s.id, s.user_id, s.chat_id, s.name, s.project_id, s.claude_session_id, s.state, s.created_at, s.updated_at,
                 COUNT(m.id) as message_count,
                 MAX(CASE WHEN m.role = 'user' THEN m.timestamp END) as last_user_message_time
             FROM sessions s
@@ -283,6 +292,7 @@ def list_sessions(user_id: int, chat_id: int, limit: int = None, offset: int = 0
                     chat_id=row["chat_id"],
                     name=row["name"],
                     project_id=row["project_id"],
+                    claude_session_id=row["claude_session_id"],
                     state=json.loads(row["state"]) if row["state"] else {},
                     created_at=row["created_at"],
                     updated_at=row["updated_at"]
@@ -310,7 +320,7 @@ def get_session(session_id: int) -> Optional[Session]:
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, user_id, chat_id, name, project_id, state, created_at, updated_at FROM sessions WHERE id = ?",
+            "SELECT id, user_id, chat_id, name, project_id, claude_session_id, state, created_at, updated_at FROM sessions WHERE id = ?",
             (session_id,)
         )
         row = cursor.fetchone()
@@ -323,6 +333,7 @@ def get_session(session_id: int) -> Optional[Session]:
             chat_id=row["chat_id"],
             name=row["name"],
             project_id=row["project_id"],
+            claude_session_id=row["claude_session_id"],
             state=json.loads(row["state"]) if row["state"] else {},
             created_at=row["created_at"],
             updated_at=row["updated_at"]
@@ -341,6 +352,19 @@ def update_session_state(session_id: int, state: dict):
         )
         conn.commit()
         _logger.info("Updated state for session %d", session_id)
+
+
+def update_claude_session_id(session_id: int, claude_session_id: str):
+    """Update the Claude session ID for a session."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        timestamp = datetime.utcnow().isoformat()
+        cursor.execute(
+            "UPDATE sessions SET claude_session_id = ?, updated_at = ? WHERE id = ?",
+            (claude_session_id, timestamp, session_id)
+        )
+        conn.commit()
+        _logger.info("Updated Claude session ID for session %d: %s", session_id, claude_session_id)
 
 
 def rename_session(session_id: int, new_name: str):

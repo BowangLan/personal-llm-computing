@@ -115,88 +115,63 @@ User message: {user_input}"""
     return title
 
 
-async def llm_reply(user_input: str, past_messages: List[Message] = None, session_state: dict = None, working_dir: str = None) -> tuple[str, dict]:
+async def llm_reply(user_input: str, claude_session_id: str = None, working_dir: str = None) -> tuple[str, str]:
     """
     General chat response for normal text messages.
-    Uses past messages from the active session as context.
+    Uses Claude's built-in session management for conversation continuity.
     If working_dir is provided, it will be set as the cwd for tool execution.
-    Returns (response, updated_state) tuple.
+    Returns (response, claude_session_id) tuple.
     """
     t0 = time.perf_counter()
 
-    if session_state is None:
-        session_state = {}
-
-    # Build conversation history from past messages
-    conversation_history = ""
-    if past_messages:
-        history_lines = []
-        for msg in past_messages:
-            role = "User" if msg.role == "user" else "Assistant"
-            # Truncate very long messages for context (keep last 500 chars)
-            content = msg.content[-500:] if len(msg.content) > 500 else msg.content
-            history_lines.append(f"{role}: {content}")
-        conversation_history = "\n\nPrevious conversation:\n" + "\n".join(history_lines) + "\n"
-
-    # Format session state for prompt
-    state_section = f"\n\nCurrent session state: {json.dumps(session_state, indent=2)}\n"
-
-    # Add working directory information if available
-    working_dir_section = f"\n\nWorking directory: {working_dir}\n" if working_dir else ""
-
-    prompt = f"""You are a helpful assistant in a Telegram chat.
-Answer clearly and concisely.
-If the user asks you to run shell commands, tell them to prefix with 'run:' and describe what will happen.
-{conversation_history}{state_section}{working_dir_section}
-IMPORTANT: You have access to a session state object that persists across messages in this conversation.
-You can modify this state in any way you want to keep track of information, context, or anything else you find useful.
-Use it as a memory sink for the session. Update it with relevant information from the conversation.
-
-User message: {user_input}"""
-
-    schema = {
-        "type": "object",
-        "properties": {
-            "response": {
-                "type": "string",
-                "description": "The chat response to the user"
-            },
-            "updated_state": {
-                "type": "object",
-                "description": "Updated session state. You can modify this however you want to track information across the conversation. Can be any valid JSON object."
-            }
-        },
-        "required": ["response", "updated_state"]
-    }
-
-    # Build ClaudeAgentOptions with cwd if working_dir is provided
+    # Build ClaudeAgentOptions
     options_kwargs = {
         "allowed_tools": ["Read", "Edit", "Bash", "Glob", "WebSearch", "WebFetch"],
-        "output_format": {"type": "json_schema", "schema": schema},
         "permission_mode": "bypassPermissions"
     }
+
     if working_dir:
         options_kwargs["cwd"] = working_dir
 
-    result = None
+    # If we have a Claude session ID, resume the session
+    if claude_session_id:
+        options_kwargs["resume"] = claude_session_id
+
+    # For first message, provide a simple system context
+    prompt = user_input
+    if not claude_session_id:
+        prompt = f"""You are a helpful assistant in a Telegram chat.
+Answer clearly and concisely.
+If the user asks you to run shell commands, tell them to prefix with 'run:' and describe what will happen.
+
+User message: {user_input}"""
+
+    reply = ""
+    captured_session_id = claude_session_id
+
     async for message in query(
         prompt=prompt,
         options=ClaudeAgentOptions(**options_kwargs),
     ):
-        if hasattr(message, "structured_output"):
-            result = message.structured_output
+        # Capture the session ID from the init message
+        if hasattr(message, 'subtype') and message.subtype == 'init':
+            captured_session_id = message.data.get('session_id')
+            log_event(_logger, "claude_session_captured", session_id=captured_session_id)
 
-    reply = result.get("response", "(empty response)") if result else "(empty response)"
-    updated_state = result.get("updated_state", session_state) if result else session_state
+        # Collect the text response
+        if hasattr(message, "result") and message.result:
+            reply += message.result
+
+    reply = reply.strip() or "(empty response)"
 
     log_event(
         _logger,
         "llm_reply_finished",
         input_len=len(user_input),
         output_len=len(reply),
-        context_count=len(past_messages) if past_messages else 0,
-        state_updated=updated_state != session_state,
         has_working_dir=working_dir is not None,
+        is_new_session=claude_session_id is None,
         duration_ms=int((time.perf_counter() - t0) * 1000),
     )
-    return reply, updated_state
+
+    return reply, captured_session_id
